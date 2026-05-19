@@ -2,7 +2,7 @@
 
 Telegram bot that checks `https://kino.pub/` every minute.
 
-- If the site returns HTTP `404`, status becomes `down` and subscribers get one `kinopub is down` notification.
+- If the site returns HTTP `404`, any `5xx` status, or cannot be reached, status becomes `down` and subscribers get one `kinopub is down` notification.
 - While it stays `404`, the bot keeps checking every minute without repeating the down notification.
 - When the site returns anything other than `404`, status becomes `alive` and subscribers get `knopub is alive`.
 - `/status` replies with the current status and subscribes that chat for future alerts.

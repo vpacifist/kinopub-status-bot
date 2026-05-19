@@ -174,8 +174,8 @@ def get_site_status():
     except urllib.error.HTTPError as exc:
         return status_from_http_code(exc.code)
     except Exception as exc:
-        print(f"site check failed without 404, keeping alive: {exc}", file=sys.stderr)
-        return STATUS_ALIVE
+        print(f"site check failed, marking down: {exc}", file=sys.stderr)
+        return STATUS_DOWN
 
 
 def check_site_and_notify(state):
