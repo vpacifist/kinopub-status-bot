@@ -10,14 +10,25 @@ from pathlib import Path
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHECK_URL = os.environ.get("CHECK_URL", "https://kino.pub/")
+CHECK_COOKIE = os.environ.get("CHECK_COOKIE", "").strip()
+CHECK_USER_AGENT = os.environ.get(
+    "CHECK_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+)
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "60"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "kinopub_bot_state.json"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "20"))
+SLOW_RESPONSE_SECONDS = float(os.environ.get("SLOW_RESPONSE_SECONDS", "10"))
+RECOVERY_CONFIRMATION_CHECKS = int(os.environ.get("RECOVERY_CONFIRMATION_CHECKS", "3"))
 
 STATUS_ALIVE = "alive"
 STATUS_DOWN = "down"
 ERROR_BODY_MARKERS = (
     b"an internal server error occurred",
+)
+LOGIN_REDIRECT_MARKERS = (
+    "/user/login",
 )
 
 
@@ -25,9 +36,20 @@ def status_from_http_code(code):
     return STATUS_DOWN if code == 404 or 500 <= code <= 599 else STATUS_ALIVE
 
 
-def status_from_http_response(code, body):
+def status_from_http_response(code, body, elapsed_seconds=0, headers=None):
+    if elapsed_seconds > SLOW_RESPONSE_SECONDS:
+        return STATUS_DOWN
+
     if status_from_http_code(code) == STATUS_DOWN:
         return STATUS_DOWN
+
+    location = ""
+    if headers is not None:
+        location = headers.get("Location", "")
+    if CHECK_COOKIE and 300 <= code <= 399:
+        normalized_location = location.lower()
+        if any(marker in normalized_location for marker in LOGIN_REDIRECT_MARKERS):
+            return STATUS_DOWN
 
     normalized_body = body.lower()
     if any(marker in normalized_body for marker in ERROR_BODY_MARKERS):
@@ -57,6 +79,7 @@ def load_dotenv():
 def load_state():
     state = {
         "status": STATUS_ALIVE,
+        "alive_checks": 0,
         "subscribers": [],
         "telegram_offset": None,
     }
@@ -177,23 +200,35 @@ def handle_updates(state):
 
 
 def get_site_status():
+    headers = {
+        "User-Agent": CHECK_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    if CHECK_COOKIE:
+        headers["Cookie"] = CHECK_COOKIE
+
     request = urllib.request.Request(
         CHECK_URL,
-        headers={
-            "User-Agent": "kinopub-status-bot/1.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
+        headers=headers,
         method="GET",
     )
 
+    started_at = time.monotonic()
     try:
         opener = urllib.request.build_opener(NoRedirectHandler)
         with opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             body = response.read(4096)
-            return status_from_http_response(response.status, body)
+            elapsed_seconds = time.monotonic() - started_at
+            return status_from_http_response(
+                response.status,
+                body,
+                elapsed_seconds,
+                response.headers,
+            )
     except urllib.error.HTTPError as exc:
         body = exc.read(4096)
-        return status_from_http_response(exc.code, body)
+        elapsed_seconds = time.monotonic() - started_at
+        return status_from_http_response(exc.code, body, elapsed_seconds, exc.headers)
     except Exception as exc:
         print(f"site check failed, marking down: {exc}", file=sys.stderr)
         return STATUS_DOWN
@@ -201,7 +236,18 @@ def get_site_status():
 
 def check_site_and_notify(state):
     previous_status = state.get("status", STATUS_ALIVE)
-    current_status = get_site_status()
+    previous_alive_checks = state.get("alive_checks", 0)
+    raw_status = get_site_status()
+
+    if raw_status == STATUS_ALIVE:
+        state["alive_checks"] = state.get("alive_checks", 0) + 1
+        if previous_status == STATUS_DOWN and state["alive_checks"] < RECOVERY_CONFIRMATION_CHECKS:
+            current_status = STATUS_DOWN
+        else:
+            current_status = STATUS_ALIVE
+    else:
+        state["alive_checks"] = 0
+        current_status = STATUS_DOWN
 
     if current_status != previous_status:
         state["status"] = current_status
@@ -210,8 +256,14 @@ def check_site_and_notify(state):
             notify_subscribers(state, "kinopub is down")
         else:
             notify_subscribers(state, "kinopub is alive")
+    elif state.get("alive_checks", 0) != previous_alive_checks:
+        save_state(state)
 
-    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {CHECK_URL} => {current_status}", flush=True)
+    print(
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {CHECK_URL} => {current_status}"
+        f" raw={raw_status} alive_checks={state.get('alive_checks', 0)}",
+        flush=True,
+    )
 
 
 def main():
