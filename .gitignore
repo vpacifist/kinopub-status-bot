@@ -1,0 +1,5 @@
+.env
+kinopub_bot_state.json
+__pycache__/
+*.pyc
+.railway/
