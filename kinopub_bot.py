@@ -16,10 +16,29 @@ REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "20"))
 
 STATUS_ALIVE = "alive"
 STATUS_DOWN = "down"
+ERROR_BODY_MARKERS = (
+    b"an internal server error occurred",
+)
 
 
 def status_from_http_code(code):
     return STATUS_DOWN if code == 404 or 500 <= code <= 599 else STATUS_ALIVE
+
+
+def status_from_http_response(code, body):
+    if status_from_http_code(code) == STATUS_DOWN:
+        return STATUS_DOWN
+
+    normalized_body = body.lower()
+    if any(marker in normalized_body for marker in ERROR_BODY_MARKERS):
+        return STATUS_DOWN
+
+    return STATUS_ALIVE
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def load_dotenv():
@@ -168,11 +187,13 @@ def get_site_status():
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            response.read(1024)
-            return status_from_http_code(response.status)
+        opener = urllib.request.build_opener(NoRedirectHandler)
+        with opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            body = response.read(4096)
+            return status_from_http_response(response.status, body)
     except urllib.error.HTTPError as exc:
-        return status_from_http_code(exc.code)
+        body = exc.read(4096)
+        return status_from_http_response(exc.code, body)
     except Exception as exc:
         print(f"site check failed, marking down: {exc}", file=sys.stderr)
         return STATUS_DOWN
@@ -188,7 +209,7 @@ def check_site_and_notify(state):
         if current_status == STATUS_DOWN:
             notify_subscribers(state, "kinopub is down")
         else:
-            notify_subscribers(state, "knopub is alive")
+            notify_subscribers(state, "kinopub is alive")
 
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {CHECK_URL} => {current_status}", flush=True)
 
