@@ -18,6 +18,10 @@ STATUS_ALIVE = "alive"
 STATUS_DOWN = "down"
 
 
+def status_from_http_code(code):
+    return STATUS_DOWN if code == 404 or 500 <= code <= 599 else STATUS_ALIVE
+
+
 def load_dotenv():
     env_file = Path(".env")
     if not env_file.exists():
@@ -166,9 +170,9 @@ def get_site_status():
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             response.read(1024)
-            return STATUS_DOWN if response.status == 404 else STATUS_ALIVE
+            return status_from_http_code(response.status)
     except urllib.error.HTTPError as exc:
-        return STATUS_DOWN if exc.code == 404 else STATUS_ALIVE
+        return status_from_http_code(exc.code)
     except Exception as exc:
         print(f"site check failed without 404, keeping alive: {exc}", file=sys.stderr)
         return STATUS_ALIVE
